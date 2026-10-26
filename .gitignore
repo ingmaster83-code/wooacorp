@@ -2,3 +2,5 @@ _site/
 __pycache__/
 *.pyc
 .env
+check.log
+build.log

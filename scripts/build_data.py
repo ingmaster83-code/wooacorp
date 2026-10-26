@@ -43,6 +43,7 @@ for fname, base in (("multi_2024.json", 2024), ("multi_2022.json", 2022)):
 
 # ───── 보조 데이터 ─────
 comp = jsonl("company"); emp = jsonl("empSttus"); alot = jsonl("alotMatter"); hold = jsonl("hyslrSttus"); hmv = jsonl("hmvAuditAllSttus")
+mrhl = jsonl("mrhlSttus"); otr = jsonl("otrCprInvstmntSttus"); adt = jsonl("accnutAdtorNmNdAdtOpinion"); fee = jsonl("adtServcCnclsSttus")
 SIDO = [("서울", "서울"), ("부산", "부산"), ("대구", "대구"), ("인천", "인천"), ("광주", "광주"), ("대전", "대전"), ("울산", "울산"), ("세종", "세종"), ("경기", "경기"), ("강원", "강원"), ("충청북", "충북"), ("충북", "충북"),
         ("충청남", "충남"), ("충남", "충남"), ("전라북", "전북"), ("전북", "전북"), ("전라남", "전남"), ("전남", "전남"), ("경상북", "경북"), ("경북", "경북"), ("경상남", "경남"), ("경남", "경남"), ("제주", "제주")]
 def sido_of(addr):
@@ -119,6 +120,60 @@ def parse_exec(rows):
     if not avg: return None
     return {"n": int(num(r.get("nmpr")) or 0) or None, "avg": avg, "tot": tot}
 
+def parse_minor(rows):
+    for r in rows or []:
+        if "소액주주" in (r.get("se") or ""):
+            n_ = num(r.get("shrholdr_co"))
+            if n_ is None: continue
+            return {"n": int(n_), "tot": int(num(r.get("shrholdr_tot_co")) or 0) or None, "rt": num((r.get("shrholdr_rate") or "").replace("%", "")), "hs": num(r.get("hold_stock_co")), "ts": num(r.get("stock_tot_co")),
+                    "hr": num((r.get("hold_stock_rate") or "").replace("%", ""))}
+    return None
+
+def parse_inv(rows):
+    if not rows: return None
+    items = []; total = None
+    for r in rows:
+        nm = (r.get("inv_prm") or "").strip()
+        book = num(r.get("trmend_blce_acntbk_amount"))
+        if nm == "합계": total = book; continue
+        if nm in ("", "-", "계"): continue
+        items.append([nm, re.sub(r"[^0-9]", "", r.get("frst_acqs_de") or ""), (r.get("invstmnt_purps") or "").strip().replace("-", ""), num(r.get("trmend_blce_qota_rt")), book, num(r.get("trmend_blce_qy"))])
+    if not items: return None
+    items.sort(key=lambda x: -(x[4] or 0))
+    if total is None: total = sum(x[4] or 0 for x in items) or None
+    return {"n": len(items), "tot": total, "items": items[:100]}
+
+PERIOD = [("당기", "0"), ("전기", "1"), ("전전기", "2")]
+def norm_auditor(n):
+    n = re.sub(r"\s+", "", n or "")
+    if n and not n.endswith(("회계법인", "감사반", "회계사", "법인")) and re.search(r"[가-힣]", n): n += "회계법인"
+    return n
+def norm_opinion(o):
+    o = re.sub(r"\s+", "", o or "")
+    return {"적정": "적정의견", "한정": "한정의견", "부적정": "부적정의견", "의견거절": "의견거절"}.get(o, o)
+def parse_aud(rows):
+    if not rows: return None
+    seen = set(); out = []
+    for r in rows:
+        by = (r.get("bsns_year") or ""); per = next((lab for lab, _ in PERIOD if lab in by), None)
+        if not per: continue
+        ad_ = norm_auditor(r.get("adtor")); op = norm_opinion(r.get("adt_opinion"))
+        if (per, ad_, op) in seen: continue
+        seen.add((per, ad_, op))
+        core = re.sub(r"\s+", " ", r.get("core_adt_matter") or "").strip()
+        out.append([per, ad_, op, "" if core in ("-", "해당사항 없음") else core[:400], re.sub(r"\s+", " ", (r.get("emphs_matter") or "")).strip()[:200]])
+    return out or None
+
+def parse_fee(rows):
+    if not rows: return None
+    out = []; seen = set()
+    for r in rows:
+        by = (r.get("bsns_year") or ""); per = next((lab for lab, _ in PERIOD if lab in by), None)
+        if not per or per in seen: continue
+        seen.add(per)
+        out.append([per, norm_auditor(r.get("adtor")), num(r.get("adt_cntrct_dtls_mendng")), num(r.get("adt_cntrct_dtls_time")), num(r.get("real_exc_dtls_mendng")), num(r.get("real_exc_dtls_time"))])
+    return out or None
+
 out = []
 for cid, c in comp.items():
     if c.get("status") != "000": continue
@@ -139,6 +194,15 @@ for cid, c in comp.items():
     if h: rec["hold"] = h
     x = parse_exec(hmv.get(cid, {}).get("list")) if hmv.get(cid, {}).get("status") == "000" else None
     if x: rec["exec"] = x
+    ok = lambda d_: d_.get(cid, {}).get("status") == "000"
+    mi = parse_minor(mrhl[cid]["list"]) if ok(mrhl) else None
+    if mi: rec["minor"] = mi
+    iv = parse_inv(otr[cid]["list"]) if ok(otr) else None
+    if iv: rec["inv"] = iv
+    au = parse_aud(adt[cid]["list"]) if ok(adt) else None
+    if au: rec["aud"] = au
+    fe_ = parse_fee(fee[cid]["list"]) if ok(fee) else None
+    if fe_: rec["fee"] = fe_
     out.append(rec)
 
 out.sort(key=lambda r: r["id"])
@@ -148,6 +212,6 @@ dst.parent.mkdir(exist_ok=True)
 with gzip.open(dst, "wt", encoding="utf-8", compresslevel=9) as f: json.dump(meta, f, ensure_ascii=False, separators=(",", ":"))
 cnt = collections.Counter()
 for r in out:
-    for k in ("emp", "div", "hold", "exec"):
+    for k in ("emp", "div", "hold", "exec", "minor", "inv", "aud", "fee"):
         if k in r: cnt[k] += 1
 print("companies", len(out), dict(cnt), "bytes", dst.stat().st_size)

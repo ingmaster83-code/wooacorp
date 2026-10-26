@@ -77,6 +77,21 @@ for d in DATA:
     dv = d.get("div") or {}
     d["dps"] = (dv.get("dps") or {}).get(FY)
     d["yld"] = (dv.get("yld") or {}).get(FY)
+for d in DATA:
+    d["minn"] = (d.get("minor") or {}).get("n")
+    d["invtot"] = (d.get("inv") or {}).get("tot")
+    d["invn"] = (d.get("inv") or {}).get("n")
+    au = d.get("aud") or []
+    cur_a = next((a for a in au if a[0] == "당기"), None)
+    d["auditor"] = cur_a[1] if cur_a else None
+    d["opinion"] = cur_a[2] if cur_a else None
+    fe_ = (d.get("fee") or [])
+    cur_f = next((f for f in fe_ if f[0] == "당기"), None)
+    d["fee_cur"] = cur_f[2] if cur_f and cur_f[2] else None
+    d["fee_hours"] = cur_f[3] if cur_f and cur_f[3] else None
+def _norm(n): return re.sub(r"\(주\)|㈜|주식회사|\(유\)|유한회사|\s", "", n or "")
+NAMEMAP = collections.defaultdict(list)
+for d in DATA: NAMEMAP[_norm(d["n"])].append(d)
 BY_IND = collections.defaultdict(list); BY_SIDO = collections.defaultdict(list)
 for d in DATA:
     if d["ind2"]: BY_IND[d["ind2"]].append(d)
@@ -103,6 +118,9 @@ METRICS = [
     ("debt-ratio", "부채비율", lambda d: d["debt"], lambda d: pct(d["debt"], 0), False, "부채비율이 낮은"),
     ("salary", "1인 평균급여", lambda d: d["sal"], lambda d: man(d["sal"]), True, "직원 1인 평균급여가 높은"),
     ("employees", "직원 수", lambda d: d["empn"], lambda d: ("%s명" % num(d["empn"])) if d["empn"] else "-", True, "직원 수가 많은"),
+    ("minority", "소액주주 수", lambda d: d["minn"], lambda d: ("%s명" % num(d["minn"])) if d["minn"] else "-", True, "소액주주가 많은"),
+    ("investments", "타법인 출자 장부가", lambda d: d["invtot"] if d["invtot"] and d["invtot"] > 0 else None, lambda d: fw(d["invtot"]), True, "타법인 출자(투자) 장부가액이 큰"),
+    ("audit-fee", "감사보수", lambda d: d["fee_cur"], lambda d: fw(d["fee_cur"]), True, "외부감사 계약 보수가 많은"),
     ("dividend", "배당수익률", lambda d: d["yld"] if d["yld"] and 0 < d["yld"] <= 30 else None, lambda d: pct(d["yld"], 2), True, "현금배당수익률이 높은"),
 ]
 MET = {m[0]: m for m in METRICS}
@@ -136,6 +154,9 @@ def sub_chips(d):
     if d["empn"] or d["sal"]: items.append((d["n"] + " 평균연봉", d["path"] + "salary/"))
     if d["dps"]: items.append((d["n"] + " 배당금", d["path"] + "dividend/"))
     if d.get("hold") and d["hold"].get("top"): items.append((d["n"] + " 최대주주", d["path"] + "shareholders/"))
+    if d.get("minor") and d["minn"]: items.append((d["n"] + " 소액주주", d["path"] + "minority/"))
+    if d.get("inv"): items.append((d["n"] + " 투자·계열 출자", d["path"] + "investments/"))
+    if d.get("aud"): items.append((d["n"] + " 감사의견", d["path"] + "audit/"))
     return items
 
 def crumbs_for(d, label=None, sub=""):
@@ -351,6 +372,158 @@ def page_holder(d):
     desc = "%s 최대주주 %s%s, 최대주주·특수관계인 합계 지분율 %s (%s년 사업보고서 기준)." % (d["n"], top or "-", (" 지분율 %s" % pct(rt, 2)) if rt is not None else "", pct(al, 2), FY)
     write(path, layout(path, "%s 최대주주·지분율 (%s년)" % (d["n"], FY), desc, body, faq, crumbs_for(d, "최대주주", "shareholders/"), extra_ld=org_ld(d)), "0.5")
 
+# ───────────────────────── 소액주주 ─────────────────────────
+def page_minor(d):
+    m = d["minor"]; path = d["path"] + "minority/"
+    rk_ = metric_rank(d, "minority") if m.get("n") else (None, 0)
+    ind_rk = rankof(d, BY_IND[d["ind2"]], MET["minority"][2]) if (m.get("n") and d["ind2"]) else (None, 0)
+    med_all = med(DATA, lambda x: x["minn"])
+    parts = []
+    if m.get("n"): parts.append("소액주주는 <b>%s명</b>" % num(m["n"]))
+    if m.get("tot"): parts.append("전체 주주 %s명 중 %s" % (num(m["tot"]), pct(m["rt"], 2) if m.get("rt") is not None else "대부분"))
+    if m.get("hr") is not None: parts.append("소액주주가 보유한 주식은 발행주식의 <b>%s</b>" % pct(m["hr"], 2))
+    lead = '<p class="lead"><b>%s</b>의 %s년 사업보고서 기준 %s입니다.%s 소액주주는 발행주식 총수의 1%% 미만을 가진 주주를 말합니다.</p>' % (esc(d["n"]), FY, ", ".join(parts),
+        (" 사업보고서 제출 기업 중앙값(%s명)보다 %s 편입니다." % (num(med_all), "많은" if m["n"] > med_all else "적은")) if (m.get("n") and med_all) else "")
+    rows = [["소액주주 수", ("%s명" % num(m["n"])) if m.get("n") else "-"], ["전체 주주 수", ("%s명" % num(m["tot"])) if m.get("tot") else "-"], ["소액주주 비율(인원)", pct(m.get("rt"), 2)],
+            ["소액주주 보유 주식 수", ("%s주" % num(m["hs"])) if m.get("hs") else "-"], ["발행주식 총수", ("%s주" % num(m["ts"])) if m.get("ts") else "-"], ["소액주주 보유 지분율", pct(m.get("hr"), 2)]]
+    if rk_[0]: rows.append(["소액주주 수 전체 순위", "%s위 / %s개 기업" % (num(rk_[0]), num(rk_[1]))])
+    if ind_rk[0]: rows.append(["업종 내 순위", "%s위 / %s개 (%s)" % (num(ind_rk[0]), num(ind_rk[1]), esc(d["indn"]))])
+    near = ""
+    if d["ind2"] and m.get("n"):
+        lst = sorted([x for x in BY_IND[d["ind2"]] if x["minn"] and x is not d], key=lambda x: abs(x["minn"] - m["n"]))[:8]
+        lst.sort(key=lambda x: -x["minn"])
+        if lst: near = '<h2 class="group-title">🏭 같은 업종 소액주주 수 비교</h2>' + table(["회사", "구분", "소액주주 수", "소액주주 지분율"], [[comp_link(x), x["mk"], num(x["minn"]), pct(x["minor"].get("hr"), 2)] for x in lst], (2, 3))
+    body = f"""
+<div class="page-head"><h1>{esc(d['n'])} 소액주주 수·지분율 ({FY}년)</h1><p>{d['mk']} · {esc(d['indn'] or '기업')} · {ASOF}</p></div>
+{lead}
+{ad()}
+<h2 class="group-title">👥 소액주주 현황</h2>
+{table(['항목', '내용'], rows)}
+{near}
+<p class="note">소액주주 수가 많을수록 주식이 널리 분산되어 있다는 뜻이며 주가나 투자 가치를 의미하지 않습니다. {('대주주 지분은 <a href="%sshareholders/">최대주주 페이지</a>에서 확인하세요. ' % d['path']) if (d.get('hold') and d['hold'].get('top')) else ''}{NOTE}</p>
+{chips(sub_chips(d))}
+{chips(rk("minority", "소액주주 순위") + ind_chip(d))}
+"""
+    faq = [("%s 소액주주는 몇 명인가요?" % d["n"], "%s년 사업보고서 기준 소액주주는 %s명이며 발행주식의 %s를 보유합니다." % (FY, num(m.get("n")), pct(m.get("hr"), 2))), ("소액주주란?", "발행주식 총수의 1% 미만을 가진 주주입니다. 소액주주 수와 지분율은 주식 분산 정도를 보여 줍니다.")]
+    write(path, layout(path, "%s 소액주주 수·지분율 (%s년)" % (d["n"], FY), "%s 소액주주 %s명, 소액주주 보유 지분율 %s (%s년 사업보고서)." % (d["n"], num(m.get("n")), pct(m.get("hr"), 2), FY), body, faq, crumbs_for(d, "소액주주", "minority/"), extra_ld=org_ld(d)), "0.5")
+
+# ───────────────────────── 타법인 출자 ─────────────────────────
+def page_inv(d):
+    iv = d["inv"]; path = d["path"] + "investments/"; items = iv["items"]
+    mgmt = sum(1 for it in items if "경영" in it[2])
+    top = items[0]
+    lead = '<p class="lead"><b>%s</b>은(는) %s년 사업보고서 기준 <b>%s곳</b>에 출자하고 있으며 출자 장부가액 합계는 <b>%s</b>입니다. 장부가액이 가장 큰 출자처는 %s(지분 %s, %s)입니다.%s</p>' % (
+        esc(d["n"]), FY, num(iv["n"]), fw(iv["tot"]), esc(top[0]), pct(top[3], 1), fw(top[4]), (" 상위 %d곳 중 경영참여 목적은 %d곳입니다." % (len(items), mgmt)) if mgmt else "")
+    rows = []
+    for i, it in enumerate(items[:100]):
+        link = NAMEMAP.get(_norm(it[0]))
+        nm = '<a href="%s">%s</a>' % (link[0]["path"], esc(it[0])) if link and len(link) == 1 and link[0] is not d else esc(it[0])
+        acq = ("%s.%s" % (it[1][:4], it[1][4:6])) if len(it[1]) >= 6 else "-"
+        rows.append([str(i + 1), nm, esc(it[2] or "-"), acq, pct(it[3], 1) if it[3] is not None else "-", fw(it[4])])
+    inb = INBOUND.get(d["id"], [])
+    inb_html = ('<h2 class="group-title">🔗 이 회사에 출자한 기업</h2>' + table(["회사", "구분", "지분율", "장부가액"], [[comp_link(e), e["mk"], pct(it[3], 1) if it[3] is not None else "-", fw(it[4])] for e, it in inb[:20]], (2, 3))) if inb else ""
+    body = f"""
+<div class="page-head"><h1>{esc(d['n'])} 타법인 출자·계열사 투자 현황 ({FY}년)</h1><p>{d['mk']} · {esc(d['indn'] or '기업')} · {ASOF}</p></div>
+{lead}
+{ad()}
+<h2 class="group-title">🏢 출자처 TOP {min(100, len(items))} (장부가액 순)</h2>
+{table(['순위', '출자처', '출자 목적', '최초 취득', '지분율', '장부가액'], rows, (0, 4, 5))}
+{inb_html}
+<p class="note">타법인 출자 현황은 사업보고서 ‘타법인 출자 현황’의 기말 잔액 기준이며 출자처 이름이 우아기업에 있는 기업이면 링크했습니다. 장부가액은 시가와 다를 수 있습니다. {NOTE}</p>
+{chips(sub_chips(d))}
+{chips(rk("investments", "출자 규모 순위") + ind_chip(d))}
+"""
+    faq = [("%s은(는) 어디에 출자했나요?" % d["n"], "%s년 사업보고서 기준 %s곳에 출자했고 장부가액이 가장 큰 곳은 %s(%s)입니다." % (FY, num(iv["n"]), top[0], fw(top[4]))), ("타법인 출자 현황이란?", "회사가 다른 법인의 주식에 투자한 내역으로 계열사·관계사 지분과 단순 투자 지분이 포함됩니다.")]
+    write(path, layout(path, "%s 타법인 출자·계열사 투자 현황 (%s년)" % (d["n"], FY), "%s의 타법인 출자 %s곳, 장부가액 합계 %s. 최대 출자처 %s(지분 %s)." % (d["n"], num(iv["n"]), fw(iv["tot"]), top[0], pct(top[3], 1)), body, faq, crumbs_for(d, "출자 현황", "investments/"), extra_ld=org_ld(d)), "0.5")
+
+INBOUND = collections.defaultdict(list)
+for _e in DATA:
+    if not _e.get("inv"): continue
+    for _it in _e["inv"]["items"]:
+        _t = NAMEMAP.get(_norm(_it[0]))
+        if _t and len(_t) == 1 and _t[0] is not _e: INBOUND[_t[0]["id"]].append((_e, _it))
+for _k in INBOUND: INBOUND[_k].sort(key=lambda x: -(x[1][4] or 0))
+
+# ───────────────────────── 감사의견 ─────────────────────────
+OP_OK = ("적정", "적정의견")
+def is_clean(op): return (op or "").replace(" ", "") in OP_OK
+AUD_BY = collections.defaultdict(list)
+for _d in DATA:
+    if _d.get("aud") and _d["auditor"]: AUD_BY[_d["auditor"]].append(_d)
+def page_audit(d):
+    au = d["aud"]; path = d["path"] + "audit/"; cur = next((a for a in au if a[0] == "당기"), au[0])
+    fee = d.get("fee") or []
+    lead = '<p class="lead"><b>%s</b>의 %s년 사업보고서 기준 외부감사인은 <b>%s</b>이고 감사의견은 <b>%s</b>입니다.%s%s</p>' % (
+        esc(d["n"]), FY, esc(cur[1]), esc(cur[2]), "" if is_clean(cur[2]) else " 적정이 아닌 의견은 재무제표 신뢰성에 문제가 있다는 뜻이므로 감사보고서 원문 확인이 필요합니다.",
+        (" 감사 계약 보수는 %s(총 %s시간)입니다." % (fw(d["fee_cur"]), num(d["fee_hours"]))) if d["fee_cur"] and d["fee_hours"] else (" 감사 계약 보수는 %s입니다." % fw(d["fee_cur"]) if d["fee_cur"] else ""))
+    t1 = table(["사업연도", "감사인", "감사의견"], [[esc(a[0]), esc(a[1]), esc(a[2])] for a in au])
+    core = [a for a in au if a[3]]
+    core_html = ""
+    if core:
+        c = core[0]; core_html = '<h2 class="group-title">🔍 핵심감사사항 (%s)</h2><p class="lead">%s</p>' % (c[0], esc(c[3]))
+    emph = [a for a in au if a[4] and a[4] not in ("-", "해당사항 없음", "해당 없음")]
+    emph_html = ('<h2 class="group-title">⚠️ 강조사항</h2><p class="lead">%s</p>' % esc(emph[0][4])) if emph else ""
+    fee_html = ""
+    if fee:
+        fee_html = '<h2 class="group-title">💰 감사 보수·시간</h2>' + table(["사업연도", "감사인", "계약 보수", "계약 시간", "실제 보수", "실제 시간"], [[esc(f[0]), esc(f[1]), fw(f[2]) if f[2] else "-", ("%s시간" % num(f[3])) if f[3] else "-", fw(f[4]) if f[4] else "-", ("%s시간" % num(f[5])) if f[5] else "-"] for f in fee], (2, 3, 4, 5))
+    chips_a = [(cur[1] + " 감사 기업", "/auditor/%s/" % sl(cur[1]))] if cur[1] in AUD_BY else []
+    body = f"""
+<div class="page-head"><h1>{esc(d['n'])} 감사인·감사의견 ({FY}년)</h1><p>{d['mk']} · {esc(d['indn'] or '기업')} · {ASOF}</p></div>
+{lead}
+{ad()}
+<h2 class="group-title">🧾 감사인·감사의견</h2>
+{t1}
+{fee_html}
+{core_html}
+{emph_html}
+<p class="note">감사의견 ‘적정’은 재무제표가 중요한 부분에서 기업회계기준에 맞게 작성되었다는 뜻이며 투자 안전성을 보장하지 않습니다. 감사보고서 원문은 DART에서 확인하세요. {NOTE}</p>
+{chips(sub_chips(d))}
+{chips(chips_a + [("감사의견 비적정 기업", "/audit-opinion/")] + rk("audit-fee", "감사보수 순위"))}
+"""
+    faq = [("%s 감사인은 어디인가요?" % d["n"], "%s년 사업보고서 기준 %s입니다." % (FY, cur[1])), ("%s 감사의견은?" % d["n"], "%s년 %s 감사의견은 %s입니다." % (FY, cur[1], cur[2]))]
+    write(path, layout(path, "%s 감사인·감사의견 (%s년)" % (d["n"], FY), "%s의 외부감사인 %s, 감사의견 %s%s." % (d["n"], cur[1], cur[2], (", 감사 보수 %s" % fw(d["fee_cur"])) if d["fee_cur"] else ""), body, faq, crumbs_for(d, "감사의견", "audit/"), extra_ld=org_ld(d)), "0.5")
+
+def page_auditor(name):
+    lst = sorted(AUD_BY[name], key=lambda d: -(d["cur"].get("r") or d["cur"].get("a") or 0)); path = "/auditor/%s/" % sl(name)
+    cnt = collections.Counter(d["opinion"] for d in lst)
+    fees = [d["fee_cur"] for d in lst if d["fee_cur"]]
+    body = f"""
+<div class="page-head"><h1>{esc(name)} 감사 기업 {len(lst)}곳 — 감사의견·보수 ({FY}년)</h1><p>외부감사인별 감사 대상 기업</p></div>
+<p class="lead"><b>{esc(name)}</b>은(는) {FY}년 사업보고서 기준 우아기업에 등록된 기업 {len(lst)}곳의 외부감사인입니다. 감사의견은 {', '.join('%s %d곳' % (k, v) for k, v in cnt.most_common(4))}입니다.{(' 감사 계약 보수 합계는 %s입니다.' % fw(sum(fees))) if fees else ''} 매출(또는 자산)이 큰 순서로 최대 200곳을 표시했습니다.</p>
+{ad()}
+{table(['회사', '구분', '업종', '감사의견', '감사 보수'], [[comp_link(d), d['mk'], esc(d['indn'] or '-'), esc(d['opinion'] or '-'), fw(d['fee_cur']) if d['fee_cur'] else '-'] for d in lst[:200]], (4,))}
+<p class="note">{NOTE}</p>
+{chips([("감사인 전체", "/auditor/"), ("감사의견 비적정 기업", "/audit-opinion/")] + rk("audit-fee", "감사보수 순위"))}
+"""
+    faq = [("%s이 감사하는 기업은 몇 곳인가요?" % name, "우아기업에 등록된 %s년 사업보고서 제출 기업 중 %d곳입니다." % (FY, len(lst)))]
+    write(path, layout(path, "%s 감사 기업 %d곳 — 감사의견·감사보수 (%s년)" % (name, len(lst), FY), "%s이 외부감사인인 기업 %d곳의 감사의견과 감사 보수. 의견 분포: %s." % (name, len(lst), ", ".join("%s %d곳" % (k, v) for k, v in cnt.most_common(3))), body, faq, [("홈", "/"), ("감사인", "/auditor/"), (name, path)]), "0.6")
+def hub_auditor():
+    names = sorted(AUD_BY, key=lambda n: -len(AUD_BY[n]))
+    rows = [['<a href="/auditor/%s/">%s</a>' % (sl(n), esc(n)), len(AUD_BY[n]), sum(1 for d in AUD_BY[n] if not is_clean(d["opinion"]))] for n in names]
+    body = f"""
+<div class="page-head"><h1>외부감사인(회계법인)별 감사 기업 — {len(names)}곳 ({FY}년)</h1><p>감사의견·감사보수</p></div>
+<p class="lead">사업보고서를 제출한 기업의 외부감사인(회계법인·감사반) {len(names)}곳입니다. 감사인을 누르면 감사 대상 기업과 감사의견·보수를 볼 수 있습니다.</p>
+{ad()}
+{table(['감사인', '감사 기업 수', '비적정 의견 기업'], rows, (1, 2))}
+<p class="note">{NOTE}</p>
+{chips([("감사의견 비적정 기업", "/audit-opinion/")] + rk("audit-fee", "감사보수 순위"))}
+"""
+    write("/auditor/", layout("/auditor/", "외부감사인(회계법인)별 감사 기업 — 삼일·삼정·한영·안진 (%s년)" % FY, "회계법인별 감사 기업 수와 감사의견. 삼일·삼정·한영·안진 등 외부감사인 %d곳." % len(names), body, None, [("홈", "/"), ("감사인", "/auditor/")], coupang=True), "0.7")
+def page_opinion():
+    lst = sorted([d for d in DATA if d["opinion"] and not is_clean(d["opinion"])], key=lambda d: (d["opinion"], d["n"]))
+    cnt = collections.Counter(d["opinion"] for d in lst)
+    body = f"""
+<div class="page-head"><h1>감사의견 비적정 기업 — 한정·부적정·의견거절 ({FY}년)</h1><p>사업보고서 제출 기업</p></div>
+<p class="lead">{FY}년 사업보고서에서 감사의견이 ‘적정’이 아닌 기업은 {len(lst)}곳({', '.join('%s %d곳' % (k, v) for k, v in cnt.most_common())})입니다. 한정·부적정·의견거절은 재무제표 신뢰성이나 감사 범위에 문제가 있다는 뜻이므로 투자·거래 전에 감사보고서 원문을 확인해야 합니다.</p>
+{ad()}
+{table(['회사', '구분', '업종', '감사인', '감사의견'], [[comp_link(d), d['mk'], esc(d['indn'] or '-'), esc(d['auditor'] or '-'), esc(d['opinion'])] for d in lst])}
+<p class="note">비적정 의견은 사업보고서(당기) 기준이며 이후 정정·재감사 결과는 반영되지 않았습니다. {NOTE}</p>
+{chips([("감사인 전체", "/auditor/")] + rk("audit-fee", "감사보수 순위"))}
+"""
+    faq = [("감사의견 ‘적정’이 아니면?", "한정은 일부 범위 제한이나 회계처리 문제가 있다는 뜻, 부적정은 재무제표가 전체적으로 왜곡되었다는 뜻, 의견거절은 감사 증거를 충분히 얻지 못해 의견을 표명하지 못했다는 뜻입니다.")]
+    write("/audit-opinion/", layout("/audit-opinion/", "감사의견 비적정 기업 — 한정·부적정·의견거절 목록 (%s년)" % FY, "%s년 사업보고서에서 감사의견이 적정이 아닌 기업 %d곳의 감사인과 의견." % (FY, len(lst)), body, faq, [("홈", "/"), ("감사의견 비적정", "/audit-opinion/")]), "0.7")
+
+
 # ───────────────────────── 순위 ─────────────────────────
 MARKETS = [("", "전체", None), ("kospi", "코스피", "Y"), ("kosdaq", "코스닥", "K")]
 def rank_table(lst, m, n=100):
@@ -518,11 +691,13 @@ def page_home():
 <a class="card" href="/rank/dividend/"><b>💵 배당 순위</b><span>현금배당수익률</span></a>
 <a class="card" href="/industry/"><b>🏭 업종별</b><span>{len(BY_IND)}개 업종 비교</span></a>
 <a class="card" href="/region/"><b>📍 지역별</b><span>본사 소재지별</span></a>
+<a class="card" href="/auditor/"><b>🧾 감사인·감사의견</b><span>회계법인별 감사 기업</span></a>
+<a class="card" href="/audit-opinion/"><b>⚠️ 감사의견 비적정</b><span>한정·부적정·의견거절</span></a>
 </div>
 <h2 class="group-title">🏆 매출액 TOP 5</h2>{mini_rank('revenue')}
 <h2 class="group-title">💰 1인 평균급여 TOP 5</h2>{mini_rank('salary')}
 <h2 class="group-title">💵 배당수익률 TOP 5</h2>{mini_rank('dividend')}
-<p class="lead">우아기업은 금융감독원 전자공시시스템(DART) 오픈API가 제공하는 {ASOF} 사업보고서를 기업별로 정리한 사이트입니다. 사업보고서를 제출한 {num(len(DATA))}개 기업의 매출액·영업이익·당기순이익, 부채비율, 직원 수와 1인 평균급여, 주당 배당금과 배당수익률, 최대주주 지분율을 확인할 수 있습니다. 자세한 기준은 <a href="/about/">데이터 설명</a>을 참고하세요.</p>
+<p class="lead">우아기업은 금융감독원 전자공시시스템(DART) 오픈API가 제공하는 {ASOF} 사업보고서를 기업별로 정리한 사이트입니다. 사업보고서를 제출한 {num(len(DATA))}개 기업의 매출액·영업이익·당기순이익, 부채비율, 직원 수와 1인 평균급여, 주당 배당금과 배당수익률, 최대주주·소액주주 지분율, 타법인 출자 현황, 외부감사인과 감사의견을 확인할 수 있습니다. 자세한 기준은 <a href="/about/">데이터 설명</a>을 참고하세요.</p>
 """
     faq = [("어떤 기업이 들어 있나요?", "DART에 %s년 사업보고서를 제출한 상장(코스피·코스닥·코넥스) 및 일부 비상장 공시 기업 %s곳입니다." % (FY, num(len(DATA)))), ("재무 정보는 최신인가요?", "%s 사업보고서 기준이며 이후 분기·반기 실적과 정정공시는 반영되지 않았습니다." % ASOF)]
     write("/", layout("/", "우아기업 — 기업 %s곳 매출·평균연봉·배당·최대주주 (%s년)" % (num(len(DATA)), FY), "DART 사업보고서 기반 기업 %s곳의 매출·영업이익, 직원 평균급여, 배당금, 최대주주를 기업별로 정리했습니다." % num(len(DATA)), body, faq), "1.0")
@@ -530,7 +705,7 @@ def page_home():
 def page_about():
     body = f"""
 <div class="page-head"><h1>데이터 설명</h1><p>정보의 출처와 한계</p></div>
-<h2 class="group-title">📚 출처</h2><p class="lead">금융감독원 전자공시시스템(DART) 오픈API(opendart.fss.or.kr)가 제공하는 {ASOF} 정기보고서(사업보고서) 정보를 사용했습니다. 기업개황, 주요계정 재무정보(매출액·영업이익·당기순이익·자산·부채·자본), 직원 현황(직원 수·1인 평균급여액·평균 근속연수), 배당에 관한 사항(주당 현금배당금·수익률·성향), 최대주주 현황, 이사·감사 전체의 보수 현황을 반영했습니다.</p>
+<h2 class="group-title">📚 출처</h2><p class="lead">금융감독원 전자공시시스템(DART) 오픈API(opendart.fss.or.kr)가 제공하는 {ASOF} 정기보고서(사업보고서) 정보를 사용했습니다. 기업개황, 주요계정 재무정보(매출액·영업이익·당기순이익·자산·부채·자본), 직원 현황(직원 수·1인 평균급여액·평균 근속연수), 배당에 관한 사항(주당 현금배당금·수익률·성향), 최대주주 현황, 소액주주 현황, 타법인 출자 현황, 회계감사인의 명칭 및 감사의견, 감사용역 체결 현황(감사 보수·시간), 이사·감사 전체의 보수 현황을 반영했습니다.</p>
 <h2 class="group-title">🧮 계산 방법</h2><p class="lead">부채비율은 부채총계를 자본총계로 나눈 값, 영업이익률은 영업이익을 매출액으로 나눈 값입니다. 연결재무제표가 있는 기업은 연결, 없으면 별도 기준이며 금융업처럼 매출액이 없는 업종은 해당 항목이 비어 있을 수 있습니다. 업종은 DART 기업개황 업종코드의 앞 2자리(표준산업분류 중분류)로 묶었고 지역은 본사 주소의 시도 기준입니다.</p>
 <h2 class="group-title">⚠️ 한계</h2><p class="lead">사업보고서를 제출한 기업만 포함되며 모든 법인을 포함하지 않습니다. 정정공시, 분기·반기 실적, 기준일 이후의 변동은 반영되지 않습니다. 평균급여는 사업보고서에 공시된 값이며 직원 개인의 연봉과 다를 수 있습니다. 이 사이트는 투자 권유나 신용평가를 제공하지 않으며 의사결정 전에 DART 원문을 확인해야 합니다.</p>
 <h2 class="group-title">📬 문의·정정</h2><p class="lead">오류 제보나 정정·삭제 요청은 <a href="mailto:ingmaster83@gmail.com">ingmaster83@gmail.com</a> 으로 보내 주세요.</p>
@@ -579,8 +754,13 @@ def main():
         if d.get("emp") and (d["empn"] or d["sal"]): page_salary(d)
         if d["dps"]: page_dividend(d)
         if d.get("hold") and d["hold"].get("top"): page_holder(d)
+        if d.get("minor") and d["minn"]: page_minor(d)
+        if d.get("inv"): page_inv(d)
+        if d.get("aud"): page_audit(d)
     for m in METRICS:
         for s2, l2, c2 in MARKETS: page_rank(m, s2, l2, c2)
+    for nm_ in sorted(AUD_BY): page_auditor(nm_)
+    hub_auditor(); page_opinion()
     for c in sorted(BY_IND): page_industry(c)
     hub_industry()
     for s in SIDOS: page_region(s)
